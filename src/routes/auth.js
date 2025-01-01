@@ -6,73 +6,47 @@ const { verifyToken } = require('../middleware/auth');
 
 router.post('/signup', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { firebaseIdToken } = req.body;
 
-    // Create user in Firebase
-    const userRecord = await admin.auth().createUser({
-      email,
-      password,
-    });
+    if (!firebaseIdToken) {
+      return res.status(400).json({ error: 'Firebase ID token is required' });
+    }
 
-    // Generate access token
-    const accessToken = jwt.sign(
-      {
-        email: userRecord.email,
-        uid: userRecord.uid
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '1d' }
-    );
+    // Verify the Firebase ID token
+    const decodedIdToken = await admin.auth().verifyIdToken(firebaseIdToken);
+    const user = await admin.auth().getUser(decodedIdToken.uid);
 
-    // Generate refresh token with longer expiry
-    const refreshToken = jwt.sign(
-      {
-        uid: userRecord.uid,
-        type: 'refresh'
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    // Generate tokens
+    const [accessToken, refreshToken] = await generateTokens(user);
 
     res.json({
       accessToken,
       refreshToken,
       user: {
-        email: userRecord.email,
-        uid: userRecord.uid
+        email: user.email,
+        uid: user.uid
       }
     });
   } catch (error) {
+    console.error('Signup error:', error);
     res.status(400).json({ error: error.message });
   }
 });
 
 router.post('/signin', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { firebaseIdToken } = req.body;
 
-    // Get user by email
-    const user = await admin.auth().getUserByEmail(email);
+    if (!firebaseIdToken) {
+      return res.status(400).json({ error: 'Firebase ID token is required' });
+    }
 
-    // Generate access token with short expiry
-    const accessToken = jwt.sign(
-      {
-        email: user.email,
-        uid: user.uid
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '1d' }
-    );
+    // Verify the Firebase ID token
+    const decodedIdToken = await admin.auth().verifyIdToken(firebaseIdToken);
+    const user = await admin.auth().getUser(decodedIdToken.uid);
 
-    // Generate refresh token with longer expiry
-    const refreshToken = jwt.sign(
-      {
-        uid: user.uid,
-        type: 'refresh'
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    // Generate tokens
+    const [accessToken, refreshToken] = await generateTokens(user);
 
     res.json({
       accessToken,
@@ -83,7 +57,8 @@ router.post('/signin', async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(401).json({ error: 'Invalid credentials' });
+    console.error('Signin error:', error);
+    res.status(401).json({ error: 'Authentication failed' });
   }
 });
 

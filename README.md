@@ -70,33 +70,33 @@ The system uses three types of tokens:
 
 ### Authentication
 
-#### POST /api/signup
-Create a new user account.
-```json
-{
-  "email": "user@example.com",
-  "password": "password123"
-}
-```
-
-Response:
-```json
-{
-  "accessToken": "your.access.token",
-  "refreshToken": "your.refresh.token",
-  "user": {
-    "email": "user@example.com",
-    "uid": "user123"
-  }
-}
-```
-
 #### POST /api/signin
-Sign in to an existing account.
+Sign in using Firebase ID token. First sign in with Firebase client SDK, then call this endpoint.
+
+Client-side code:
+```javascript
+// 1. First sign in with Firebase
+const userCredential = await firebase.auth().signInWithEmailAndPassword(email, password);
+const firebaseIdToken = await userCredential.user.getIdToken();
+
+// 2. Then call your backend
+const response = await fetch('/api/signin', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    firebaseIdToken
+  })
+});
+
+const { accessToken, refreshToken } = await response.json();
+```
+
+Request:
 ```json
 {
-  "email": "user@example.com",
-  "password": "password123"
+  "firebaseIdToken": "firebase.id.token"
 }
 ```
 
@@ -109,6 +109,36 @@ Response:
     "email": "user@example.com",
     "uid": "user123"
   }
+}
+```
+
+#### POST /api/signup
+Create a new user account. Similar to signin, first create account with Firebase client SDK.
+
+Client-side code:
+```javascript
+// 1. First create account with Firebase
+const userCredential = await firebase.auth().createUserWithEmailAndPassword(email, password);
+const firebaseIdToken = await userCredential.user.getIdToken();
+
+// 2. Then call your backend
+const response = await fetch('/api/signup', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    firebaseIdToken
+  })
+});
+
+const { accessToken, refreshToken } = await response.json();
+```
+
+Request:
+```json
+{
+  "firebaseIdToken": "firebase.id.token"
 }
 ```
 
@@ -164,43 +194,95 @@ Error Response (401 Unauthorized):
 
 ## Authentication Flow
 
-1. User signs up/signs in and receives both access and refresh tokens
-2. Access token is used for API requests (valid for 1 day)
-3. When access token expires, use refresh token to get new tokens
-4. If refresh token expires (after 7 days), use Firebase ID token to re-authenticate
-5. Always include access token in Authorization header for protected routes
+1. Client signs up/signs in using Firebase client SDK
+2. Client gets Firebase ID token
+3. Client sends Firebase ID token to backend
+4. Backend verifies Firebase ID token and returns custom tokens (access + refresh)
+5. Client uses access token for API requests (valid for 1 day)
+6. When access token expires, use refresh token to get new tokens
+7. If refresh token expires (after 7 days), use new Firebase ID token to re-authenticate
+8. Always include access token in Authorization header for protected routes
 
-### Mobile App Implementation Guide
+### Client Implementation Guide
 
-1. Store both tokens securely (e.g., Keychain for iOS, EncryptedSharedPreferences for Android)
-2. For each API request:
-   - Add access token to Authorization header
-   - If request fails with 401 (Unauthorized):
-     1. Try to get new tokens using refresh token
-     2. If refresh token is expired:
-        - Get new Firebase ID token from Firebase SDK
-        - Call refresh-token endpoint with both tokens
-        - Update stored tokens
-     3. Retry original request with new access token
-   - Only redirect to login if Firebase authentication fails
-
-### Getting Firebase ID Token
-
-The Firebase ID token is NOT returned by our backend endpoints. Instead, get it from the Firebase SDK in your client app:
-
+1. Initialize Firebase in your client app:
 ```javascript
-// Initialize Firebase in your app first
+// Initialize Firebase
 firebase.initializeApp({
-  // Your Firebase config
+  apiKey: "your-api-key",
+  authDomain: "your-auth-domain",
+  projectId: "your-project-id",
+  // ... other config
 });
+```
 
-// Get the ID token
-async function getFirebaseIdToken() {
-  const currentUser = firebase.auth().currentUser;
-  if (currentUser) {
-    return await currentUser.getIdToken(true); // Force refresh
+2. Handle authentication:
+```javascript
+async function signIn(email, password) {
+  try {
+    // 1. Sign in with Firebase
+    const userCredential = await firebase.auth().signInWithEmailAndPassword(email, password);
+    const firebaseIdToken = await userCredential.user.getIdToken();
+
+    // 2. Get custom tokens from your backend
+    const response = await fetch('/api/signin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ firebaseIdToken })
+    });
+
+    // 3. Store tokens
+    const { accessToken, refreshToken } = await response.json();
+    // Store tokens securely...
+
+    return { accessToken, refreshToken };
+  } catch (error) {
+    console.error('Sign in failed:', error);
+    throw error;
   }
-  throw new Error('No user logged in');
+}
+```
+
+3. Handle token refresh:
+```javascript
+async function refreshTokens(oldRefreshToken) {
+  try {
+    // 1. Try with refresh token first
+    const response = await fetch('/api/refresh-token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ refreshToken: oldRefreshToken })
+    });
+
+    if (response.ok) return await response.json();
+
+    // 2. If refresh token expired, get new Firebase token
+    const currentUser = firebase.auth().currentUser;
+    if (!currentUser) {
+      throw new Error('No Firebase user found');
+    }
+
+    const firebaseIdToken = await currentUser.getIdToken(true);
+    
+    // 3. Try with Firebase token
+    return await fetch('/api/refresh-token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        refreshToken: oldRefreshToken,
+        firebaseIdToken
+      })
+    }).then(res => res.json());
+  } catch (error) {
+    console.error('Token refresh failed:', error);
+    throw error;
+  }
 }
 ```
 
